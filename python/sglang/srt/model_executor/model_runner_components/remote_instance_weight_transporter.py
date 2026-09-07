@@ -8,6 +8,9 @@ import torch
 
 from sglang.srt.distributed.parallel_state import RankParallelismConfig
 from sglang.srt.environ import envs
+from sglang.srt.model_executor.model_runner_components.receiver_fault_control import (
+    ReceiverFaultController,
+)
 from sglang.srt.model_loader.remote_instance_weight_loader_utils import (
     RemoteInstanceWeightLoaderBackend,
     register_memory_region,
@@ -33,6 +36,7 @@ class RemoteInstanceWeightTransporter:
     session_id: str = ""
     weight_info: Optional[dict[str, tuple[int, int, int]]] = None
     parallelism_config: Optional[RankParallelismConfig] = None
+    fault_controller: Optional[ReceiverFaultController] = None
     _nixl_manager: Optional[Any] = None
 
     @property
@@ -47,6 +51,12 @@ class RemoteInstanceWeightTransporter:
                 "Please install mooncake for using remote instance transfer engine: pip install mooncake-transfer-engine"
             )
             return
+
+        self.close_fault_controller()
+        self.engine = None
+        self.session_id = ""
+        self.weight_info = None
+
         self.engine = TransferEngine()
         local_ip = get_local_ip_auto()
         self.engine.initialize(
@@ -58,6 +68,23 @@ class RemoteInstanceWeightTransporter:
         self.session_id = NetworkAddress(
             local_ip, self.engine.get_rpc_port()
         ).to_host_port_str()
+
+        self.start_fault_controller()
+
+    def start_fault_controller(self) -> None:
+        if not self.server_args.enable_p2p_fault_injection or self.engine is None:
+            return
+        controller = ReceiverFaultController(
+            session_id=self.session_id, rank=self.tp_rank
+        )
+        controller.start()
+        self.fault_controller = controller
+
+    def close_fault_controller(self) -> None:
+        if self.fault_controller is None:
+            return
+        self.fault_controller.close()
+        self.fault_controller = None
 
     def maybe_init_parallelism_config(self) -> None:
         if self.server_args.registers_parallelism_config():
@@ -125,6 +152,16 @@ class RemoteInstanceWeightTransporter:
                 f"Failed to register parallelism config for tp_rank={self.tp_rank}: {e}"
             )
 
+    def _receiver_identity_payload(self) -> Optional[dict[str, Any]]:
+        if self.fault_controller is None:
+            return None
+        identity = self.fault_controller.identity
+        if identity is None:
+            return None
+        if identity.session_id != self.session_id:
+            return None
+        return identity.to_dict()
+
     def _register_to_engine_info_bootstrap(self: RemoteInstanceWeightTransporter):
         """Register transfer engine info with the EngineInfoBootstrapServer via HTTP PUT.
 
@@ -151,6 +188,7 @@ class RemoteInstanceWeightTransporter:
             "transfer_engine_info": {
                 "session_id": self.session_id,
                 "weights_info_dict": self.weight_info,
+                "receiver_identity": self._receiver_identity_payload(),
             },
         }
 

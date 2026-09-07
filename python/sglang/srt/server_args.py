@@ -3309,6 +3309,10 @@ class ServerArgs:
         bool,
         "Start the EngineInfoBootstrapServer and register per-rank parallelism config, without the mooncake/verbs P2P transfer-engine seeding.",
     ] = False
+    enable_p2p_fault_injection: A[
+        bool,
+        "Start a per-rank P2P receiver fault-control endpoint that only accepts sigkill/sigstop requests matching this receiver's boot uuid, session id and rank. For fault-tolerance testing only.",
+    ] = False
     enable_rdt_weight_sync: A[
         bool,
         "Expose SchedulerActor.pull_weights for RDT (Ray Direct Transport / NIXL) weight sync. Requires --use-ray; implies --enable-engine-info-bootstrap.",

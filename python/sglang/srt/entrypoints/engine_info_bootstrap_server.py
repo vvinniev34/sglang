@@ -16,11 +16,36 @@ import logging
 import threading
 from typing import Dict, Optional, Tuple
 
+import msgspec
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 
 logger = logging.getLogger(__name__)
+
+
+class TransferEngineRecord(msgspec.Struct, frozen=True, kw_only=True):
+    session_id: str
+    weights_info_dict: Optional[dict]
+    receiver_identity: Optional[dict]
+
+    @classmethod
+    def from_registration(cls, *, info: dict) -> "TransferEngineRecord":
+        return cls(
+            session_id=info["session_id"],
+            weights_info_dict=info["weights_info_dict"],
+            receiver_identity=info.get("receiver_identity"),
+        )
+
+    def to_wire_info(self) -> list:
+        return [self.session_id, self.weights_info_dict]
+
+    def to_response(self, *, rank: int) -> dict:
+        return {
+            "rank": rank,
+            "remote_instance_transfer_engine_info": self.to_wire_info(),
+            "receiver_identity": self.receiver_identity,
+        }
 
 
 class EngineInfoBootstrapServer:
@@ -39,8 +64,8 @@ class EngineInfoBootstrapServer:
         self.host = host
         self.port = port
 
-        # Storage: {tp_rank: (session_id, weights_info_dict)}
-        self.transfer_engine_info: Dict[int, Tuple] = {}
+        # Storage: {tp_rank: TransferEngineRecord}
+        self.transfer_engine_info: Dict[int, TransferEngineRecord] = {}
         # Storage: {tp_rank: parallelism_config_dict}
         self.parallelism_config: Dict[int, dict] = {}
         self.lock = threading.Lock()
@@ -56,18 +81,14 @@ class EngineInfoBootstrapServer:
             try:
                 tp_rank = data["tp_rank"]
                 info = data["transfer_engine_info"]
-                session_id = info["session_id"]
-                weights_info_dict = info["weights_info_dict"]
+                record = TransferEngineRecord.from_registration(info=info)
 
                 with self.lock:
-                    self.transfer_engine_info[tp_rank] = (
-                        session_id,
-                        weights_info_dict,
-                    )
+                    self.transfer_engine_info[tp_rank] = record
 
                 logger.info(
                     f"Registered transfer engine info for tp_rank={tp_rank}, "
-                    f"session_id={session_id}"
+                    f"session_id={record.session_id}"
                 )
                 return PlainTextResponse("OK")
             except Exception as e:
@@ -80,15 +101,15 @@ class EngineInfoBootstrapServer:
                 raise HTTPException(status_code=400, detail="Invalid rank parameter")
 
             with self.lock:
-                info = self.transfer_engine_info.get(rank)
+                record = self.transfer_engine_info.get(rank)
 
-            if info is None:
+            if record is None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"No transfer engine info for rank {rank}",
                 )
 
-            return {"rank": rank, "remote_instance_transfer_engine_info": list(info)}
+            return record.to_response(rank=rank)
 
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         self._server = uvicorn.Server(config)
@@ -137,7 +158,10 @@ class EngineInfoBootstrapServer:
 
     def get_transfer_engine_info(self, rank: int) -> Optional[Tuple]:
         """Direct in-process access for co-located HTTP server (no HTTP round-trip)."""
-        return self.transfer_engine_info.get(rank)
+        record = self.transfer_engine_info.get(rank)
+        if record is None:
+            return None
+        return tuple(record.to_wire_info())
 
     def get_parallelism_config_info(self, rank: int) -> Optional[dict]:
         """Direct in-process access for parallelism config (no HTTP round-trip)."""
