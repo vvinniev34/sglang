@@ -25,6 +25,8 @@ The dashboard graphs every family the router emits:
 | `sgl_router_worker_requests_total` | Counter | Per-worker **dispatches** by `worker_url`, `model_id`, `mode`, `outcome` (recorded after dispatch; blind to pre-dispatch drops) |
 | `sgl_router_request_duration_seconds` | Histogram | End-to-end request latency by `model_id` |
 | `sgl_router_ttft_seconds` | Histogram | Time to first token (streaming) by `model_id` |
+| `sgl_router_itl_seconds` | Histogram | Inter-token latency (gap between upstream chunks, 2xx streams) by `model_id`; buckets align with the engine's ITL grid |
+| `sgl_router_stream_outcome_total` | Counter | **End-of-stream truth** for 2xx streams by `worker_url`, `model_id`, `outcome` (`ok` / `inband_error` / `upstream_error` / `client_disconnect`) — the only metric that sees an engine failing in-band after committing 200 |
 | `sgl_router_active_load` | Gauge | Per-worker prefill-token / decode-block load |
 | `sgl_router_workers` | Gauge | Registered worker count by `mode` |
 | `sgl_router_worker_health` | Gauge | Per-worker health (1=breaker admits, 0=open) |
